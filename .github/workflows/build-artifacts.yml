@@ -16,21 +16,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            args: --target universal-apple-darwin --bundles app,dmg
-            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
-            artifact_suffix: macos-universal
-            bundle_dir: src-tauri/target/universal-apple-darwin/release/bundle
+          # - platform: macos-latest
+          #   args: --target universal-apple-darwin --bundles app,dmg
+          #   rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+          #   artifact_suffix: macos-universal
+          #   bundle_dir: src-tauri/target/universal-apple-darwin/release/bundle
           - platform: windows-latest
             args: --bundles nsis,msi
             rust_targets: ""
             artifact_suffix: windows-x64
             bundle_dir: src-tauri/target/release/bundle
-          - platform: ubuntu-latest
-            args: --bundles deb,rpm,appimage
-            rust_targets: ""
-            artifact_suffix: linux-x64
-            bundle_dir: src-tauri/target/release/bundle
+          # - platform: ubuntu-latest
+          #   args: --bundles deb,rpm,appimage
+          #   rust_targets: ""
+          #   artifact_suffix: linux-x64
+          #   bundle_dir: src-tauri/target/release/bundle
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -72,88 +72,88 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-  build-android:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+  # build-android:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+  #     - name: Setup Bun
+  #       uses: oven-sh/setup-bun@v2
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-          cache: gradle
+  #     - name: Setup Java
+  #       uses: actions/setup-java@v4
+  #       with:
+  #         distribution: temurin
+  #         java-version: '21'
+  #         cache: gradle
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+  #     - name: Setup Android SDK
+  #       uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK components
-        run: |
-          sdkmanager --install \
-            "platforms;android-36" \
-            "build-tools;36.0.0" \
-            "platform-tools" \
-            "ndk;29.0.14206865"
+  #     - name: Install Android SDK components
+  #       run: |
+  #         sdkmanager --install \
+  #           "platforms;android-36" \
+  #           "build-tools;36.0.0" \
+  #           "platform-tools" \
+  #           "ndk;29.0.14206865"
 
-      - name: Accept Android licenses
-        run: yes | sdkmanager --licenses
+  #     - name: Accept Android licenses
+  #       run: yes | sdkmanager --licenses
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,x86_64-linux-android
+  #     - name: Setup Rust
+  #       uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         targets: aarch64-linux-android,x86_64-linux-android
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: ./src-tauri -> target
+  #     - name: Rust cache
+  #       uses: swatinem/rust-cache@v2
+  #       with:
+  #         workspaces: ./src-tauri -> target
 
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
+  #     - name: Install frontend dependencies
+  #       run: bun install --frozen-lockfile
 
-      - name: Initialize Android project
-        run: bunx tauri android init --ci --skip-targets-install
+  #     - name: Initialize Android project
+  #       run: bunx tauri android init --ci --skip-targets-install
 
-      - name: Ensure Android network security config
-        run: |
-          mkdir -p src-tauri/gen/android/app/src/main/res/xml
-          cat > src-tauri/gen/android/app/src/main/res/xml/network_security_config.xml << 'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <network-security-config>
-              <base-config cleartextTrafficPermitted="true">
-                  <trust-anchors>
-                      <certificates src="system" />
-                      <certificates src="user" />
-                  </trust-anchors>
-              </base-config>
-          </network-security-config>
-          EOF
+  #     - name: Ensure Android network security config
+  #       run: |
+  #         mkdir -p src-tauri/gen/android/app/src/main/res/xml
+  #         cat > src-tauri/gen/android/app/src/main/res/xml/network_security_config.xml << 'EOF'
+  #         <?xml version="1.0" encoding="utf-8"?>
+  #         <network-security-config>
+  #             <base-config cleartextTrafficPermitted="true">
+  #                 <trust-anchors>
+  #                     <certificates src="system" />
+  #                     <certificates src="user" />
+  #                 </trust-anchors>
+  #             </base-config>
+  #         </network-security-config>
+  #         EOF
 
-      - name: Add custom Android notification sound
-        run: |
-          mkdir -p src-tauri/gen/android/app/src/main/res/raw
-          install -m 0644 src-tauri/sounds/free_grind_message.mp3 src-tauri/gen/android/app/src/main/res/raw/free_grind_message.mp3
+  #     - name: Add custom Android notification sound
+  #       run: |
+  #         mkdir -p src-tauri/gen/android/app/src/main/res/raw
+  #         install -m 0644 src-tauri/sounds/free_grind_message.mp3 src-tauri/gen/android/app/src/main/res/raw/free_grind_message.mp3
 
-      - name: Restore Android keystore
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          mkdir -p src-tauri/certs
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > src-tauri/certs/free-grind-dev.jks
+  #     - name: Restore Android keystore
+  #       env:
+  #         ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+  #       run: |
+  #         mkdir -p src-tauri/certs
+  #         echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > src-tauri/certs/free-grind-dev.jks
 
-      - name: Build Android APK
-        run: bunx tauri android build --apk -v
+  #     - name: Build Android APK
+  #       run: bunx tauri android build --apk -v
 
-      - name: Upload Android APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: free-grind-android
-          path: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
-          retention-days: 14
-          if-no-files-found: error
+  #     - name: Upload Android APK
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: free-grind-android
+  #         path: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
+  #         retention-days: 14
+  #         if-no-files-found: error
 
   build-ios:
     runs-on: macos-latest
