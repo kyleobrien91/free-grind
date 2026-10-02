@@ -14,501 +14,501 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  create-release:
-    runs-on: ubuntu-latest
-    outputs:
-      release_id: ${{ steps.create-release.outputs.release_id }}
-      tag_name: ${{ steps.vars.outputs.tag_name }}
-      release_name: ${{ steps.vars.outputs.release_name }}
-    steps:
-      - uses: actions/checkout@v4
+  # create-release:
+  #   runs-on: ubuntu-latest
+  #   outputs:
+  #     release_id: ${{ steps.create-release.outputs.release_id }}
+  #     tag_name: ${{ steps.vars.outputs.tag_name }}
+  #     release_name: ${{ steps.vars.outputs.release_name }}
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-      - name: Derive release metadata
-        id: vars
-        run: |
-          echo "package_version=$(jq -r '.version' package.json)" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          echo "tag_name=main-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          echo "release_name=Free Grind v$(jq -r '.version' package.json) (${GITHUB_SHA::7})" >> "$GITHUB_OUTPUT"
+  #     - name: Derive release metadata
+  #       id: vars
+  #       run: |
+  #         echo "package_version=$(jq -r '.version' package.json)" >> "$GITHUB_OUTPUT"
+  #         echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+  #         echo "tag_name=main-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+  #         echo "release_name=Free Grind v$(jq -r '.version' package.json) (${GITHUB_SHA::7})" >> "$GITHUB_OUTPUT"
 
-      - name: Create draft release
-        id: create-release
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const { data } = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: '${{ steps.vars.outputs.tag_name }}',
-              name: '${{ steps.vars.outputs.release_name }}',
-              body: [
-                'Automated release generated from a push to `main`.',
-                '',
-                `Commit: ${context.sha}`
-              ].join('\n'),
-              draft: true,
-              prerelease: false,
-              generate_release_notes: true
-            });
-            core.setOutput('release_id', String(data.id));
+  #     - name: Create draft release
+  #       id: create-release
+  #       uses: actions/github-script@v8
+  #       with:
+  #         script: |
+  #           const { data } = await github.rest.repos.createRelease({
+  #             owner: context.repo.owner,
+  #             repo: context.repo.repo,
+  #             tag_name: '${{ steps.vars.outputs.tag_name }}',
+  #             name: '${{ steps.vars.outputs.release_name }}',
+  #             body: [
+  #               'Automated release generated from a push to `main`.',
+  #               '',
+  #               `Commit: ${context.sha}`
+  #             ].join('\n'),
+  #             draft: true,
+  #             prerelease: false,
+  #             generate_release_notes: true
+  #           });
+  #           core.setOutput('release_id', String(data.id));
 
-  publish-ota:
-    needs: create-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
+  # publish-ota:
+  #   needs: create-release
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: write
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+  #     - name: Setup Bun
+  #       uses: oven-sh/setup-bun@v2
 
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
+  #     - name: Install frontend dependencies
+  #       run: bun install --frozen-lockfile
 
-      - name: Build frontend bundle
-        run: |
-          bun run build
-          tar -czf frontend.tar.gz -C dist .
+  #     - name: Build frontend bundle
+  #       run: |
+  #         bun run build
+  #         tar -czf frontend.tar.gz -C dist .
 
-      - name: Sign OTA bundle
-        env:
-          HOTSWAP_PRIVATE_KEY: ${{ secrets.HOTSWAP_PRIVATE_KEY }}
-          HOTSWAP_PRIVATE_KEY_PASSWORD: ${{ secrets.HOTSWAP_PRIVATE_KEY_PASSWORD }}
-        run: |
-          bunx tauri signer sign frontend.tar.gz -k "$HOTSWAP_PRIVATE_KEY" -p "${HOTSWAP_PRIVATE_KEY_PASSWORD:-}"
+  #     - name: Sign OTA bundle
+  #       env:
+  #         HOTSWAP_PRIVATE_KEY: ${{ secrets.HOTSWAP_PRIVATE_KEY }}
+  #         HOTSWAP_PRIVATE_KEY_PASSWORD: ${{ secrets.HOTSWAP_PRIVATE_KEY_PASSWORD }}
+  #       run: |
+  #         bunx tauri signer sign frontend.tar.gz -k "$HOTSWAP_PRIVATE_KEY" -p "${HOTSWAP_PRIVATE_KEY_PASSWORD:-}"
 
-      - name: Upload OTA bundle to backend
-        id: ota-upload
-        env:
-          OTA_BACKEND_URL: ${{ secrets.OTA_BACKEND_URL }}
-          OTA_BACKEND_TOKEN: ${{ secrets.OTA_BACKEND_TOKEN }}
-        run: |
-          BACKEND_URL="${OTA_BACKEND_URL%/}"
-          OTA_VERSION="$(jq -r '.version' package.json)-ota.${GITHUB_RUN_NUMBER}"
-          RESPONSE=$(curl --fail-with-body -sS -X POST "$BACKEND_URL/api/releases" \
-            -H "Authorization: Bearer $OTA_BACKEND_TOKEN" \
-            -F "channel=main" \
-            -F "platform=all" \
-            -F "arch=all" \
-            -F "version=$OTA_VERSION" \
-            -F "minBinaryVersion=$(jq -r '.version' package.json)" \
-            -F "signature=$(cat frontend.tar.gz.sig)" \
-            -F "notes=Automated OTA upload for ${GITHUB_SHA}" \
-            -F "mandatory=false" \
-            -F "bundleFile=@frontend.tar.gz;type=application/gzip")
+  #     - name: Upload OTA bundle to backend
+  #       id: ota-upload
+  #       env:
+  #         OTA_BACKEND_URL: ${{ secrets.OTA_BACKEND_URL }}
+  #         OTA_BACKEND_TOKEN: ${{ secrets.OTA_BACKEND_TOKEN }}
+  #       run: |
+  #         BACKEND_URL="${OTA_BACKEND_URL%/}"
+  #         OTA_VERSION="$(jq -r '.version' package.json)-ota.${GITHUB_RUN_NUMBER}"
+  #         RESPONSE=$(curl --fail-with-body -sS -X POST "$BACKEND_URL/api/releases" \
+  #           -H "Authorization: Bearer $OTA_BACKEND_TOKEN" \
+  #           -F "channel=main" \
+  #           -F "platform=all" \
+  #           -F "arch=all" \
+  #           -F "version=$OTA_VERSION" \
+  #           -F "minBinaryVersion=$(jq -r '.version' package.json)" \
+  #           -F "signature=$(cat frontend.tar.gz.sig)" \
+  #           -F "notes=Automated OTA upload for ${GITHUB_SHA}" \
+  #           -F "mandatory=false" \
+  #           -F "bundleFile=@frontend.tar.gz;type=application/gzip")
 
-          echo "$RESPONSE" > ota-upload-response.json
-          echo "ota_version=$OTA_VERSION" >> "$GITHUB_OUTPUT"
-          echo "ota_sequence=$(jq -r '.sequence' ota-upload-response.json)" >> "$GITHUB_OUTPUT"
-          echo "ota_bundle_url=$(jq -r '.bundle_url' ota-upload-response.json)" >> "$GITHUB_OUTPUT"
+  #         echo "$RESPONSE" > ota-upload-response.json
+  #         echo "ota_version=$OTA_VERSION" >> "$GITHUB_OUTPUT"
+  #         echo "ota_sequence=$(jq -r '.sequence' ota-upload-response.json)" >> "$GITHUB_OUTPUT"
+  #         echo "ota_bundle_url=$(jq -r '.bundle_url' ota-upload-response.json)" >> "$GITHUB_OUTPUT"
 
-      - name: Upload OTA artifacts to GitHub release
-        uses: actions/github-script@v8
-        env:
-          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
-          OTA_VERSION: ${{ steps.ota-upload.outputs.ota_version }}
-        with:
-          script: |
-            const fs = require('fs');
+  #     - name: Upload OTA artifacts to GitHub release
+  #       uses: actions/github-script@v8
+  #       env:
+  #         RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+  #         OTA_VERSION: ${{ steps.ota-upload.outputs.ota_version }}
+  #       with:
+  #         script: |
+  #           const fs = require('fs');
 
-            const files = [
-              {
-                path: 'frontend.tar.gz',
-                name: `frontend-${process.env.OTA_VERSION}.tar.gz`,
-                contentType: 'application/gzip'
-              },
-              {
-                path: 'frontend.tar.gz.sig',
-                name: `frontend-${process.env.OTA_VERSION}.tar.gz.sig`,
-                contentType: 'text/plain'
-              }
-            ];
+  #           const files = [
+  #             {
+  #               path: 'frontend.tar.gz',
+  #               name: `frontend-${process.env.OTA_VERSION}.tar.gz`,
+  #               contentType: 'application/gzip'
+  #             },
+  #             {
+  #               path: 'frontend.tar.gz.sig',
+  #               name: `frontend-${process.env.OTA_VERSION}.tar.gz.sig`,
+  #               contentType: 'text/plain'
+  #             }
+  #           ];
 
-            for (const file of files) {
-              const data = fs.readFileSync(file.path);
-              await github.rest.repos.uploadReleaseAsset({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                release_id: Number(process.env.RELEASE_ID),
-                name: file.name,
-                data,
-                headers: {
-                  'content-type': file.contentType,
-                  'content-length': data.length
-                }
-              });
-            }
+  #           for (const file of files) {
+  #             const data = fs.readFileSync(file.path);
+  #             await github.rest.repos.uploadReleaseAsset({
+  #               owner: context.repo.owner,
+  #               repo: context.repo.repo,
+  #               release_id: Number(process.env.RELEASE_ID),
+  #               name: file.name,
+  #               data,
+  #               headers: {
+  #                 'content-type': file.contentType,
+  #                 'content-length': data.length
+  #               }
+  #             });
+  #           }
 
-  build-desktop:
-    needs: create-release
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: macos-latest
-            args: --target universal-apple-darwin --bundles app,dmg
-            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
-            artifact_suffix: macos-universal
-            bundle_dir: src-tauri/target/universal-apple-darwin/release/bundle
-          - platform: windows-latest
-            args: --bundles nsis,msi
-            rust_targets: ""
-            artifact_suffix: windows-x64
-            bundle_dir: src-tauri/target/release/bundle
-          - platform: ubuntu-latest
-            args: --bundles deb,rpm,appimage
-            rust_targets: ""
-            artifact_suffix: linux-x64
-            bundle_dir: src-tauri/target/release/bundle
-    runs-on: ${{ matrix.platform }}
-    steps:
-      - uses: actions/checkout@v4
+  # build-desktop:
+  #   needs: create-release
+  #   permissions:
+  #     contents: write
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       include:
+  #         - platform: macos-latest
+  #           args: --target universal-apple-darwin --bundles app,dmg
+  #           rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+  #           artifact_suffix: macos-universal
+  #           bundle_dir: src-tauri/target/universal-apple-darwin/release/bundle
+  #         - platform: windows-latest
+  #           args: --bundles nsis,msi
+  #           rust_targets: ""
+  #           artifact_suffix: windows-x64
+  #           bundle_dir: src-tauri/target/release/bundle
+  #         - platform: ubuntu-latest
+  #           args: --bundles deb,rpm,appimage
+  #           rust_targets: ""
+  #           artifact_suffix: linux-x64
+  #           bundle_dir: src-tauri/target/release/bundle
+  #   runs-on: ${{ matrix.platform }}
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf rpm
+  #     - name: Install Linux dependencies
+  #       if: matrix.platform == 'ubuntu-latest'
+  #       run: |
+  #         sudo apt-get update
+  #         sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf rpm
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+  #     - name: Setup Bun
+  #       uses: oven-sh/setup-bun@v2
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_targets }}
+  #     - name: Setup Rust
+  #       uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         targets: ${{ matrix.rust_targets }}
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: ./src-tauri -> target
+  #     - name: Rust cache
+  #       uses: swatinem/rust-cache@v2
+  #       with:
+  #         workspaces: ./src-tauri -> target
 
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
+  #     - name: Install frontend dependencies
+  #       run: bun install --frozen-lockfile
 
-      - name: Build desktop artifacts
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tauriScript: bunx tauri
-          args: ${{ matrix.args }}
+  #     - name: Build desktop artifacts
+  #       uses: tauri-apps/tauri-action@v0
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #       with:
+  #         tauriScript: bunx tauri
+  #         args: ${{ matrix.args }}
 
-      - name: Upload desktop artifacts to release
-        uses: actions/github-script@v8
-        env:
-          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
-          ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
-          BUNDLE_DIR: ${{ matrix.bundle_dir }}
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const os = require('os');
-            const { execFileSync } = require('child_process');
+  #     - name: Upload desktop artifacts to release
+  #       uses: actions/github-script@v8
+  #       env:
+  #         RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+  #         ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
+  #         BUNDLE_DIR: ${{ matrix.bundle_dir }}
+  #       with:
+  #         script: |
+  #           const fs = require('fs');
+  #           const path = require('path');
+  #           const os = require('os');
+  #           const { execFileSync } = require('child_process');
 
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            const version = pkg.version;
-            const suffix = process.env.ARTIFACT_SUFFIX;
-            let bundleDir = process.env.BUNDLE_DIR;
-            const releaseId = Number(process.env.RELEASE_ID);
+  #           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  #           const version = pkg.version;
+  #           const suffix = process.env.ARTIFACT_SUFFIX;
+  #           let bundleDir = process.env.BUNDLE_DIR;
+  #           const releaseId = Number(process.env.RELEASE_ID);
 
-            // Resolve bundleDir to absolute path for debugging
-            if (!path.isAbsolute(bundleDir)) {
-              bundleDir = path.resolve(bundleDir);
-            }
+  #           // Resolve bundleDir to absolute path for debugging
+  #           if (!path.isAbsolute(bundleDir)) {
+  #             bundleDir = path.resolve(bundleDir);
+  #           }
 
-            const mimeTypes = {
-              '.dmg':         'application/x-apple-diskimage',
-              '.gz':          'application/gzip',
-              '.tar.gz':      'application/gzip',
-              '.tar.gz.sig':  'text/plain',
-              '.sig':         'text/plain',
-              '.exe':         'application/vnd.microsoft.portable-executable',
-              '.exe.sig':     'text/plain',
-              '.msi':         'application/x-msi',
-              '.msi.sig':     'text/plain',
-              '.deb':         'application/vnd.debian.binary-package',
-              '.deb.sig':     'text/plain',
-              '.rpm':         'application/x-rpm',
-              '.rpm.sig':     'text/plain',
-              '.AppImage':     'application/vnd.appimage',
-              '.AppImage.sig': 'text/plain',
-            };
+  #           const mimeTypes = {
+  #             '.dmg':         'application/x-apple-diskimage',
+  #             '.gz':          'application/gzip',
+  #             '.tar.gz':      'application/gzip',
+  #             '.tar.gz.sig':  'text/plain',
+  #             '.sig':         'text/plain',
+  #             '.exe':         'application/vnd.microsoft.portable-executable',
+  #             '.exe.sig':     'text/plain',
+  #             '.msi':         'application/x-msi',
+  #             '.msi.sig':     'text/plain',
+  #             '.deb':         'application/vnd.debian.binary-package',
+  #             '.deb.sig':     'text/plain',
+  #             '.rpm':         'application/x-rpm',
+  #             '.rpm.sig':     'text/plain',
+  #             '.AppImage':     'application/vnd.appimage',
+  #             '.AppImage.sig': 'text/plain',
+  #           };
 
-            // Collect installable bundles
-            const searchDirs = {
-              'macos-universal': ['dmg', 'macos'],
-              'windows-x64':     ['nsis', 'msi'],
-              'linux-x64':       ['deb', 'rpm', 'appimage'],
-            };
+  #           // Collect installable bundles
+  #           const searchDirs = {
+  #             'macos-universal': ['dmg', 'macos'],
+  #             'windows-x64':     ['nsis', 'msi'],
+  #             'linux-x64':       ['deb', 'rpm', 'appimage'],
+  #           };
 
-            const subDirs = searchDirs[suffix] ?? [];
-            const uploads = [];
-            // Ordered longest-first so multi-part extensions are matched before shorter ones
-            const allowedExts = ['.tar.gz.sig', '.tar.gz', '.exe.sig', '.msi.sig', '.AppImage.sig', '.deb.sig', '.rpm.sig', '.dmg', '.exe', '.msi', '.deb', '.rpm', '.AppImage'];
+  #           const subDirs = searchDirs[suffix] ?? [];
+  #           const uploads = [];
+  #           // Ordered longest-first so multi-part extensions are matched before shorter ones
+  #           const allowedExts = ['.tar.gz.sig', '.tar.gz', '.exe.sig', '.msi.sig', '.AppImage.sig', '.deb.sig', '.rpm.sig', '.dmg', '.exe', '.msi', '.deb', '.rpm', '.AppImage'];
 
-            function addUpload(src, assetName, mime) {
-              uploads.push({ src, name: assetName, mime });
-            }
+  #           function addUpload(src, assetName, mime) {
+  #             uploads.push({ src, name: assetName, mime });
+  #           }
 
-            function versionedAssetName(baseName) {
-              return `free-grind-v${version}-${suffix}-${baseName}`;
-            }
+  #           function versionedAssetName(baseName) {
+  #             return `free-grind-v${version}-${suffix}-${baseName}`;
+  #           }
 
-            function hasAnyBundleSubdir(dir) {
-              if (!fs.existsSync(dir)) return false;
-              return subDirs.some((sub) => fs.existsSync(path.join(dir, sub)));
-            }
+  #           function hasAnyBundleSubdir(dir) {
+  #             if (!fs.existsSync(dir)) return false;
+  #             return subDirs.some((sub) => fs.existsSync(path.join(dir, sub)));
+  #           }
 
-            function resolveBundleDir() {
-              const candidates = [bundleDir];
+  #           function resolveBundleDir() {
+  #             const candidates = [bundleDir];
 
-              // Tauri can place bundle outputs in different target layouts depending on host/build settings.
-              if (suffix === 'macos-universal') {
-                candidates.push(
-                  'src-tauri/target/release/bundle',
-                  'src-tauri/target/universal-apple-darwin/release/bundle',
-                  'src-tauri/target/aarch64-apple-darwin/release/bundle',
-                  'src-tauri/target/x86_64-apple-darwin/release/bundle'
-                );
-              }
+  #             // Tauri can place bundle outputs in different target layouts depending on host/build settings.
+  #             if (suffix === 'macos-universal') {
+  #               candidates.push(
+  #                 'src-tauri/target/release/bundle',
+  #                 'src-tauri/target/universal-apple-darwin/release/bundle',
+  #                 'src-tauri/target/aarch64-apple-darwin/release/bundle',
+  #                 'src-tauri/target/x86_64-apple-darwin/release/bundle'
+  #               );
+  #             }
 
-              const resolved = candidates
-                .filter(Boolean)
-                .map((c) => (path.isAbsolute(c) ? c : path.resolve(c)));
+  #             const resolved = candidates
+  #               .filter(Boolean)
+  #               .map((c) => (path.isAbsolute(c) ? c : path.resolve(c)));
 
-              for (const candidate of resolved) {
-                if (hasAnyBundleSubdir(candidate)) {
-                  return candidate;
-                }
-              }
+  #             for (const candidate of resolved) {
+  #               if (hasAnyBundleSubdir(candidate)) {
+  #                 return candidate;
+  #               }
+  #             }
 
-              // Prefer the first existing directory even if expected subdirs are missing for better diagnostics.
-              const firstExisting = resolved.find((c) => fs.existsSync(c));
-              return firstExisting || resolved[0];
-            }
+  #             // Prefer the first existing directory even if expected subdirs are missing for better diagnostics.
+  #             const firstExisting = resolved.find((c) => fs.existsSync(c));
+  #             return firstExisting || resolved[0];
+  #           }
 
-            bundleDir = resolveBundleDir();
+  #           bundleDir = resolveBundleDir();
 
-            console.log(`📦 Artifact search: suffix=${suffix}, bundleDir=${bundleDir}`);
-            console.log(`   bundleDir exists: ${fs.existsSync(bundleDir)}`);
-            console.log(`📂 Searching subdirs: ${subDirs.join(', ')}`);
+  #           console.log(`📦 Artifact search: suffix=${suffix}, bundleDir=${bundleDir}`);
+  #           console.log(`   bundleDir exists: ${fs.existsSync(bundleDir)}`);
+  #           console.log(`📂 Searching subdirs: ${subDirs.join(', ')}`);
 
-            for (const sub of subDirs) {
-              const dir = path.join(bundleDir, sub);
-              console.log(`  Checking: ${dir}`);
-              if (!fs.existsSync(dir)) {
-                console.log(`    ❌ Does not exist`);
-                continue;
-              }
-              const entries = fs.readdirSync(dir, { withFileTypes: true });
-              console.log(`    ✓ Found ${entries.length} entries`);
+  #           for (const sub of subDirs) {
+  #             const dir = path.join(bundleDir, sub);
+  #             console.log(`  Checking: ${dir}`);
+  #             if (!fs.existsSync(dir)) {
+  #               console.log(`    ❌ Does not exist`);
+  #               continue;
+  #             }
+  #             const entries = fs.readdirSync(dir, { withFileTypes: true });
+  #             console.log(`    ✓ Found ${entries.length} entries`);
               
-              for (const entry of entries) {
-                console.log(`      - ${entry.name} (${entry.isDirectory() ? 'dir' : 'file'})`);
+  #             for (const entry of entries) {
+  #               console.log(`      - ${entry.name} (${entry.isDirectory() ? 'dir' : 'file'})`);
                 
-                // On macOS, Tauri may output a .app directory without a DMG.
-                // Zip that directory so we always publish a runnable desktop artifact.
-                if (suffix === 'macos-universal' && entry.isDirectory() && entry.name.endsWith('.app')) {
-                  const appPath = path.join(dir, entry.name);
-                  const zipPath = path.join(os.tmpdir(), `${entry.name}.zip`);
-                  console.log(`        ↻ Zipping .app bundle: ${zipPath}`);
-                  if (fs.existsSync(zipPath)) fs.rmSync(zipPath, { force: true });
-                  try {
-                    execFileSync('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath]);
-                    addUpload(zipPath, versionedAssetName(`${entry.name}.zip`), 'application/zip');
-                    console.log(`        ✓ Zipped and queued`);
-                  } catch (e) {
-                    console.log(`        ⚠ Failed to zip: ${e.message}`);
-                  }
-                  continue;
-                }
+  #               // On macOS, Tauri may output a .app directory without a DMG.
+  #               // Zip that directory so we always publish a runnable desktop artifact.
+  #               if (suffix === 'macos-universal' && entry.isDirectory() && entry.name.endsWith('.app')) {
+  #                 const appPath = path.join(dir, entry.name);
+  #                 const zipPath = path.join(os.tmpdir(), `${entry.name}.zip`);
+  #                 console.log(`        ↻ Zipping .app bundle: ${zipPath}`);
+  #                 if (fs.existsSync(zipPath)) fs.rmSync(zipPath, { force: true });
+  #                 try {
+  #                   execFileSync('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath]);
+  #                   addUpload(zipPath, versionedAssetName(`${entry.name}.zip`), 'application/zip');
+  #                   console.log(`        ✓ Zipped and queued`);
+  #                 } catch (e) {
+  #                   console.log(`        ⚠ Failed to zip: ${e.message}`);
+  #                 }
+  #                 continue;
+  #               }
 
-                if (!entry.isFile()) {
-                  console.log(`        ⊘ Skipping directory`);
-                  continue;
-                }
+  #               if (!entry.isFile()) {
+  #                 console.log(`        ⊘ Skipping directory`);
+  #                 continue;
+  #               }
                 
-                const file = entry.name;
-                const finalExt = allowedExts.find(e => file.endsWith(e));
-                if (!finalExt) {
-                  console.log(`        ⊘ Extension not in allowlist`);
-                  continue;
-                }
+  #               const file = entry.name;
+  #               const finalExt = allowedExts.find(e => file.endsWith(e));
+  #               if (!finalExt) {
+  #                 console.log(`        ⊘ Extension not in allowlist`);
+  #                 continue;
+  #               }
                 
-                const mime = mimeTypes[finalExt] ?? 'application/octet-stream';
-                addUpload(path.join(dir, file), versionedAssetName(file), mime);
-                console.log(`        ✓ Queued as ${versionedAssetName(file)}`);
-              }
-            }
+  #               const mime = mimeTypes[finalExt] ?? 'application/octet-stream';
+  #               addUpload(path.join(dir, file), versionedAssetName(file), mime);
+  #               console.log(`        ✓ Queued as ${versionedAssetName(file)}`);
+  #             }
+  #           }
 
-            // Publish portable role-specific binaries for Windows.
-            // Runtime mode is selected by executable filename (manager vs child/client).
-            if (suffix === 'windows-x64') {
-              const baseExe = path.join('src-tauri', 'target', 'release', 'free-grind.exe');
-              if (fs.existsSync(baseExe)) {
-                addUpload(baseExe, `free-grind-manager-v${version}-${suffix}.exe`, mimeTypes['.exe']);
-                addUpload(baseExe, `free-grind-client-v${version}-${suffix}.exe`, mimeTypes['.exe']);
-                // Keep a child alias for compatibility with older automation.
-                addUpload(baseExe, `free-grind-child-v${version}-${suffix}.exe`, mimeTypes['.exe']);
-                console.log(`  ✓ Windows portables queued`);
-              } else {
-                console.log(`  ❌ Windows executable not found: ${baseExe}`);
-              }
-            }
+  #           // Publish portable role-specific binaries for Windows.
+  #           // Runtime mode is selected by executable filename (manager vs child/client).
+  #           if (suffix === 'windows-x64') {
+  #             const baseExe = path.join('src-tauri', 'target', 'release', 'free-grind.exe');
+  #             if (fs.existsSync(baseExe)) {
+  #               addUpload(baseExe, `free-grind-manager-v${version}-${suffix}.exe`, mimeTypes['.exe']);
+  #               addUpload(baseExe, `free-grind-client-v${version}-${suffix}.exe`, mimeTypes['.exe']);
+  #               // Keep a child alias for compatibility with older automation.
+  #               addUpload(baseExe, `free-grind-child-v${version}-${suffix}.exe`, mimeTypes['.exe']);
+  #               console.log(`  ✓ Windows portables queued`);
+  #             } else {
+  #               console.log(`  ❌ Windows executable not found: ${baseExe}`);
+  #             }
+  #           }
 
-            // Fallback for macOS: if bundling didn't emit dmg/macos folders,
-            // still publish the universal executable as a compressed artifact.
-            if (suffix === 'macos-universal' && uploads.length === 0) {
-              const baseBinary = path.resolve('src-tauri/target/universal-apple-darwin/release/free-grind');
-              if (fs.existsSync(baseBinary)) {
-                const fallbackTar = path.join(os.tmpdir(), `free-grind-v${version}-${suffix}-binary.tar.gz`);
-                if (fs.existsSync(fallbackTar)) fs.rmSync(fallbackTar, { force: true });
-                execFileSync('/usr/bin/tar', ['-czf', fallbackTar, '-C', path.dirname(baseBinary), path.basename(baseBinary)]);
-                addUpload(fallbackTar, `free-grind-v${version}-${suffix}-binary.tar.gz`, 'application/gzip');
-                console.log(`  ✓ Added macOS binary fallback artifact from ${baseBinary}`);
-              } else {
-                console.log(`  ❌ macOS fallback binary not found at ${baseBinary}`);
-              }
-            }
+  #           // Fallback for macOS: if bundling didn't emit dmg/macos folders,
+  #           // still publish the universal executable as a compressed artifact.
+  #           if (suffix === 'macos-universal' && uploads.length === 0) {
+  #             const baseBinary = path.resolve('src-tauri/target/universal-apple-darwin/release/free-grind');
+  #             if (fs.existsSync(baseBinary)) {
+  #               const fallbackTar = path.join(os.tmpdir(), `free-grind-v${version}-${suffix}-binary.tar.gz`);
+  #               if (fs.existsSync(fallbackTar)) fs.rmSync(fallbackTar, { force: true });
+  #               execFileSync('/usr/bin/tar', ['-czf', fallbackTar, '-C', path.dirname(baseBinary), path.basename(baseBinary)]);
+  #               addUpload(fallbackTar, `free-grind-v${version}-${suffix}-binary.tar.gz`, 'application/gzip');
+  #               console.log(`  ✓ Added macOS binary fallback artifact from ${baseBinary}`);
+  #             } else {
+  #               console.log(`  ❌ macOS fallback binary not found at ${baseBinary}`);
+  #             }
+  #           }
 
-            console.log(`\n📋 Total artifacts queued: ${uploads.length}`);
-            if (uploads.length === 0) {
-              console.log(`\nDebug: Listing actual bundle directory structure:`);
-              if (fs.existsSync(bundleDir)) {
-                const allEntries = fs.readdirSync(bundleDir, { recursive: true, withFileTypes: false });
-                allEntries.slice(0, 30).forEach(e => console.log(`  ${e}`));
-              }
-              throw new Error(`No desktop artifacts found for ${suffix} under ${bundleDir}`);
-            }
+  #           console.log(`\n📋 Total artifacts queued: ${uploads.length}`);
+  #           if (uploads.length === 0) {
+  #             console.log(`\nDebug: Listing actual bundle directory structure:`);
+  #             if (fs.existsSync(bundleDir)) {
+  #               const allEntries = fs.readdirSync(bundleDir, { recursive: true, withFileTypes: false });
+  #               allEntries.slice(0, 30).forEach(e => console.log(`  ${e}`));
+  #             }
+  #             throw new Error(`No desktop artifacts found for ${suffix} under ${bundleDir}`);
+  #           }
 
-            for (const { src, name, mime } of uploads) {
-              const data = fs.readFileSync(src);
-              await github.rest.repos.uploadReleaseAsset({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                release_id: releaseId,
-                name,
-                data,
-                headers: { 'content-type': mime, 'content-length': data.length },
-              });
-              console.log(`✓ Uploaded ${name}`);
-            }
+  #           for (const { src, name, mime } of uploads) {
+  #             const data = fs.readFileSync(src);
+  #             await github.rest.repos.uploadReleaseAsset({
+  #               owner: context.repo.owner,
+  #               repo: context.repo.repo,
+  #               release_id: releaseId,
+  #               name,
+  #               data,
+  #               headers: { 'content-type': mime, 'content-length': data.length },
+  #             });
+  #             console.log(`✓ Uploaded ${name}`);
+  #           }
 
-  build-android:
-    needs: create-release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+  # build-android:
+  #   needs: create-release
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+  #     - name: Setup Bun
+  #       uses: oven-sh/setup-bun@v2
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-          cache: gradle
+  #     - name: Setup Java
+  #       uses: actions/setup-java@v4
+  #       with:
+  #         distribution: temurin
+  #         java-version: '21'
+  #         cache: gradle
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+  #     - name: Setup Android SDK
+  #       uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK components
-        run: |
-          sdkmanager --install \
-            "platforms;android-36" \
-            "build-tools;36.0.0" \
-            "platform-tools" \
-            "ndk;29.0.14206865"
+  #     - name: Install Android SDK components
+  #       run: |
+  #         sdkmanager --install \
+  #           "platforms;android-36" \
+  #           "build-tools;36.0.0" \
+  #           "platform-tools" \
+  #           "ndk;29.0.14206865"
 
-      - name: Accept Android licenses
-        run: yes | sdkmanager --licenses
+  #     - name: Accept Android licenses
+  #       run: yes | sdkmanager --licenses
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,x86_64-linux-android
+  #     - name: Setup Rust
+  #       uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         targets: aarch64-linux-android,x86_64-linux-android
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: ./src-tauri -> target
+  #     - name: Rust cache
+  #       uses: swatinem/rust-cache@v2
+  #       with:
+  #         workspaces: ./src-tauri -> target
 
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
+  #     - name: Install frontend dependencies
+  #       run: bun install --frozen-lockfile
 
-      - name: Initialize Android project
-        run: bunx tauri android init --ci --skip-targets-install
+  #     - name: Initialize Android project
+  #       run: bunx tauri android init --ci --skip-targets-install
 
-      - name: Ensure Android network security config
-        run: |
-          mkdir -p src-tauri/gen/android/app/src/main/res/xml
-          cat > src-tauri/gen/android/app/src/main/res/xml/network_security_config.xml << 'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <network-security-config>
-              <base-config cleartextTrafficPermitted="true">
-                  <trust-anchors>
-                      <certificates src="system" />
-                      <certificates src="user" />
-                  </trust-anchors>
-              </base-config>
-          </network-security-config>
-          EOF
+  #     - name: Ensure Android network security config
+  #       run: |
+  #         mkdir -p src-tauri/gen/android/app/src/main/res/xml
+  #         cat > src-tauri/gen/android/app/src/main/res/xml/network_security_config.xml << 'EOF'
+  #         <?xml version="1.0" encoding="utf-8"?>
+  #         <network-security-config>
+  #             <base-config cleartextTrafficPermitted="true">
+  #                 <trust-anchors>
+  #                     <certificates src="system" />
+  #                     <certificates src="user" />
+  #                 </trust-anchors>
+  #             </base-config>
+  #         </network-security-config>
+  #         EOF
 
-      - name: Add custom Android notification sound
-        run: |
-          mkdir -p src-tauri/gen/android/app/src/main/res/raw
-          install -m 0644 src-tauri/sounds/free_grind_message.mp3 src-tauri/gen/android/app/src/main/res/raw/free_grind_message.mp3
+  #     - name: Add custom Android notification sound
+  #       run: |
+  #         mkdir -p src-tauri/gen/android/app/src/main/res/raw
+  #         install -m 0644 src-tauri/sounds/free_grind_message.mp3 src-tauri/gen/android/app/src/main/res/raw/free_grind_message.mp3
 
-      - name: Restore Android keystore
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          mkdir -p src-tauri/certs
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > src-tauri/certs/free-grind-dev.jks
+  #     - name: Restore Android keystore
+  #       env:
+  #         ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+  #       run: |
+  #         mkdir -p src-tauri/certs
+  #         echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > src-tauri/certs/free-grind-dev.jks
 
-      - name: Build Android APK
-        run: bunx tauri android build --apk -v
+  #     - name: Build Android APK
+  #       run: bunx tauri android build --apk -v
 
-      - name: Upload Android APK to release
-        uses: actions/github-script@v8
-        env:
-          RELEASE_NAME: ${{ needs.create-release.outputs.release_name }}
-          PACKAGE_VERSION: ${{ needs.create-release.outputs.tag_name }}
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const apkPath = 'src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk';
+  #     - name: Upload Android APK to release
+  #       uses: actions/github-script@v8
+  #       env:
+  #         RELEASE_NAME: ${{ needs.create-release.outputs.release_name }}
+  #         PACKAGE_VERSION: ${{ needs.create-release.outputs.tag_name }}
+  #       with:
+  #         script: |
+  #           const fs = require('fs');
+  #           const path = require('path');
+  #           const apkPath = 'src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk';
             
-            if (!fs.existsSync(apkPath)) {
-              throw new Error(`APK not found at ${apkPath}`);
-            }
+  #           if (!fs.existsSync(apkPath)) {
+  #             throw new Error(`APK not found at ${apkPath}`);
+  #           }
             
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            const version = pkg.version;
-            const apkName = `free-grind-v${version}.apk`;
+  #           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  #           const version = pkg.version;
+  #           const apkName = `free-grind-v${version}.apk`;
             
-            const fileData = fs.readFileSync(apkPath);
+  #           const fileData = fs.readFileSync(apkPath);
             
-            await github.rest.repos.uploadReleaseAsset({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: ${{ needs.create-release.outputs.release_id }},
-              name: apkName,
-              data: fileData,
-              headers: {
-                'content-type': 'application/vnd.android.package-archive',
-                'content-length': fileData.length
-              }
-            });
+  #           await github.rest.repos.uploadReleaseAsset({
+  #             owner: context.repo.owner,
+  #             repo: context.repo.repo,
+  #             release_id: ${{ needs.create-release.outputs.release_id }},
+  #             name: apkName,
+  #             data: fileData,
+  #             headers: {
+  #               'content-type': 'application/vnd.android.package-archive',
+  #               'content-length': fileData.length
+  #             }
+  #           });
             
-            console.log(`✓ APK uploaded to release as ${apkName}`);
+  #           console.log(`✓ APK uploaded to release as ${apkName}`);
 
   build-ios:
     needs: create-release
