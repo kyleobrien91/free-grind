@@ -16,11 +16,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # - platform: macos-latest
-          #   args: --target universal-apple-darwin --bundles app,dmg
-          #   rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
-          #   artifact_suffix: macos-universal
-          #   bundle_dir: src-tauri/target/universal-apple-darwin/release/bundle
+          - platform: macos-latest
+            args: --target universal-apple-darwin --bundles app,dmg
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            artifact_suffix: macos-universal
+            bundle_dir: src-tauri/target/universal-apple-darwin/release/bundle
           - platform: windows-latest
             args: --bundles nsis,msi
             rust_targets: ""
