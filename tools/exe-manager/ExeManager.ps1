@@ -218,17 +218,23 @@ function Invoke-TauriCli {
         [string[]]$TauriArgs
     )
 
-    $localTauriCmd = Join-Path $RepoRoot 'node_modules\\.bin\\tauri.cmd'
-    if (Test-Path -LiteralPath $localTauriCmd) {
-        Write-Step "Using local Tauri CLI: $localTauriCmd"
-        & $localTauriCmd @TauriArgs
-        return
+    foreach ($candidate in @('tauri.cmd', 'tauri.exe', 'tauri.ps1')) {
+        $localTauri = Join-Path $RepoRoot "node_modules\\.bin\\$candidate"
+        if (Test-Path -LiteralPath $localTauri) {
+            Write-Step "Using local Tauri CLI: $localTauri"
+            if ($candidate -eq 'tauri.ps1') {
+                & powershell -NoProfile -ExecutionPolicy Bypass -File $localTauri @TauriArgs
+            } else {
+                & $localTauri @TauriArgs
+            }
+            return
+        }
     }
 
     $bun = Resolve-BunCommand
     Write-Warn 'Local @tauri-apps/cli not found in node_modules; using bunx package @tauri-apps/cli@2.10.1'
     Write-Step "Forwarding Tauri args: $([string]::Join(' ', $TauriArgs))"
-    & $bun x --package "@tauri-apps/cli@2.10.1" tauri -- @TauriArgs
+    & $bun x --package "@tauri-apps/cli@2.10.1" tauri @TauriArgs
 }
 
 function Resolve-TauriSourceExe {
