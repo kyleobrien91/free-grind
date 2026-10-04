@@ -1,5 +1,6 @@
 use crate::error::AppError;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, Runtime, WindowEvent};
 
 /// The Google OAuth client ID registered by Grindr.
@@ -10,14 +11,18 @@ const GRINDR_GOOGLE_CLIENT_ID: &str =
 /// Unique label for the oauth helper webview window.
 const OAUTH_WINDOW_LABEL: &str = "fg-google-oauth";
 
+/// Label prefix for Google's account-chooser popup. Each attempt needs its own
+/// label because Tauri windows are addressed by label.
+const POPUP_LABEL_PREFIX: &str = "fg-google-oauth-popup";
+
 /// Custom URL scheme the injected script navigates to in order to hand its
 /// result back to Rust.
-///
-/// This deliberately does **not** use a `location.hash` sentinel. A same-document
-/// fragment change never reaches `on_navigation` on WebView2, so the original
-/// implementation captured nothing at all — confirmed on device across two runs,
-/// one of which sat open for 32 minutes without the sentinel ever appearing.
 const OAUTH_SCHEME: &str = "fg-oauth";
+
+/// The origin Google's Identity Services client will accept. It only has to be
+/// an origin Grindr registered as an authorised JavaScript origin for their
+/// client ID; nothing about the page itself is used.
+const OAUTH_ORIGIN: &str = "https://web.grindr.com";
 
 /// While replacing a stale OAuth window, suppress the close handler's
 /// "cancelled" emission for that window only — it belongs to the old flow.
@@ -26,6 +31,9 @@ static SUPPRESS_CLOSE_EMISSIONS: AtomicBool = AtomicBool::new(false);
 /// Set once the flow produced a result (token or error) so the window-close
 /// handler does not additionally emit an empty token.
 static OAUTH_FINISHED: AtomicBool = AtomicBool::new(false);
+
+/// Makes every popup label unique.
+static POPUP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Event name emitted back to the main window once the token is captured.
 pub const GOOGLE_OAUTH_TOKEN_EVENT: &str = "fg:google-oauth-token";
@@ -60,133 +68,34 @@ fn oauth_log<R: Runtime>(app: &AppHandle<R>, message: &str) {
     }
 }
 
-/// The minimal page served in response to the `fg-oauth://` hand-off. The window
-/// is closed almost immediately, so this only needs to avoid looking broken if the
-/// close is delayed. `message` is interpolated as a JS string literal so Google's
-/// own error text can be shown without an HTML-injection path.
-fn result_page<R: Runtime>(app: &AppHandle<R>, message: &str) -> tauri::http::Response<Vec<u8>> {
-    let literal = serde_json::to_string(message).unwrap_or_else(|_| "\"Done\"".to_owned());
-    let body = format!(
-        "<!doctype html><meta charset=utf-8><title>Sign in with Google</title>\
-<body style=\"margin:0;height:100vh;display:grid;place-items:center;background:#161d27;\
-color:#e6eaf0;font:15px 'Segoe UI',system-ui,sans-serif\">\
-<div id=fg-msg style=\"text-align:center;padding:24px\"></div>\
-<script>document.getElementById('fg-msg').textContent={literal};</script>"
-    );
-    oauth_log(app, &format!("served result page: {message}"));
-    tauri::http::Response::builder()
-        .status(200)
-        .header("Content-Type", "text/html; charset=utf-8")
-        .body(body.into_bytes())
-        .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
-}
-
-/// Handles `fg-oauth://done?v=<token>` and `fg-oauth://error?v=<reason>`, which
-/// the injected script navigates to the moment Google's token client resolves.
-///
-/// Registered in `lib.rs` with `register_uri_scheme_protocol`. Using a real
-/// navigation (rather than a fragment change) is what makes the hand-off
-/// reliable: unlike a fragment, this is guaranteed to be dispatched to us.
-pub fn handle_oauth_scheme<R: Runtime>(
-    ctx: tauri::UriSchemeContext<'_, R>,
-    request: tauri::http::Request<Vec<u8>>,
-) -> tauri::http::Response<Vec<u8>> {
-    let app = ctx.app_handle();
-    let from_label = ctx.webview_label().to_owned();
-
-    let parsed = tauri::Url::parse(&request.uri().to_string()).ok();
-    let host = parsed
-        .as_ref()
-        .and_then(|u| u.host_str().map(str::to_owned))
-        .unwrap_or_default();
-    let value = parsed
-        .as_ref()
-        .and_then(|u| {
-            u.query_pairs()
-                .find(|(k, _)| k == "v")
-                .map(|(_, v)| v.into_owned())
-        })
-        .unwrap_or_default();
-
-    oauth_log(
-        app,
-        &format!(
-            "scheme host={host:?} len={} from={from_label}",
-            value.len()
-        ),
-    );
-
-    // Only ever trust our own OAuth window.
-    if from_label != OAUTH_WINDOW_LABEL {
-        return result_page(app, "Ignored: unexpected webview.");
-    }
-
-    match host.as_str() {
-        "done" => {
-            OAUTH_FINISHED.store(true, Ordering::SeqCst);
-            #[cfg(debug_assertions)]
-            eprintln!("[GOOGLE-AUTH] Captured token (len={})", value.len());
-            oauth_log(app, &format!("captured token (len={})", value.len()));
-
-            let _ = app.emit(GOOGLE_OAUTH_TOKEN_EVENT, value);
-            close_oauth_window(app);
-            result_page(app, "Signed in. Returning to Free Grind\u{2026}")
-        }
-        "error" => {
-            OAUTH_FINISHED.store(true, Ordering::SeqCst);
-            #[cfg(debug_assertions)]
-            eprintln!("[GOOGLE-AUTH] OAuth error: {value}");
-            oauth_log(app, &format!("flow error: {value}"));
-
-            // The reason is Google's own; hand it to the frontend so it can say
-            // something specific. The token event is still emitted (empty) so the
-            // loading state is always cleared.
-            let _ = app.emit(GOOGLE_OAUTH_ERROR_EVENT, value.clone());
-            let _ = app.emit(GOOGLE_OAUTH_TOKEN_EVENT, "");
-            close_oauth_window(app);
-            result_page(app, &format!("Sign-in failed: {value}"))
-        }
-        other => {
-            oauth_log(app, &format!("ignoring unknown scheme host {other:?}"));
-            result_page(app, "Nothing to do.")
-        }
-    }
-}
-
-/// Closes the OAuth helper window shortly after a result arrives, so the
-/// `fg-oauth://` response can finish loading first.
-fn close_oauth_window<R: Runtime>(app: &AppHandle<R>) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
-        if let Some(win) = app.get_webview_window(OAUTH_WINDOW_LABEL) {
-            let _ = win.close();
-        }
-    });
-}
-
 /// JS injected into the OAuth helper webview before the page's own scripts run.
 ///
 /// The window exists only to supply an *origin* that Grindr registered as an
 /// authorised JavaScript origin for their Google OAuth client ID — that is what
-/// makes Google accept a token request for that client. The page itself is
-/// treated as furniture and is never shown:
+/// makes Google issue a token for that client. The page itself is treated as
+/// furniture and is never shown:
 ///
-/// - All of the host page's own markup is hidden from the first paint and an
-///   inert "Signing you in with Google" screen is put on top, so the user is
-///   never dropped onto Grindr's login form with a button they feel obliged to
-///   press.
-/// - Google's Identity Services client is injected directly, so we never depend
-///   on the page's own scripts having loaded it.
-/// - `requestAccessToken` is attempted automatically. Because that happens
-///   without a user gesture, Chromium may refuse to open Google's popup; when
-///   that happens the screen re-arms its own button instead of failing, so one
-///   extra click is available only if it is actually needed.
-/// - The result leaves via the `fg-oauth://` scheme (see `handle_oauth_scheme`).
+/// - Runs only in the top-level frame. `initialization_script` is injected into
+///   every frame, and reCAPTCHA's own iframe was previously starting duplicate
+///   token requests from a `www.recaptcha.net` origin.
+/// - Hides all of the host page's markup from the first paint and puts an inert
+///   "Signing you in with Google" screen on top, so the user is never dropped
+///   onto Grindr's login form with a second button they feel obliged to press.
+/// - Injects Google's Identity Services client directly rather than depending on
+///   the page's own scripts having loaded it.
+/// - Attempts `requestAccessToken` automatically. Google's token client can only
+///   complete through a popup, and this runs without a user gesture, so the
+///   attempt may be refused; the screen then offers its own button so a retry is
+///   one click away instead of a dead end.
+/// - Leaves the result via the `fg-oauth://` scheme, which `on_navigation` on
+///   the Rust side intercepts.
 fn build_inject_script(client_id: &str) -> String {
     format!(
         r#"
 (function() {{
+  // Only the top-level document. This script is injected into every frame, and a
+  // third-party iframe has neither the authorised origin nor anywhere to report to.
+  if (window.top !== window) return;
   if (window.__FG_OAUTH_INJECTED__) return;
   window.__FG_OAUTH_INJECTED__ = true;
 
@@ -211,9 +120,9 @@ fn build_inject_script(client_id: &str) -> String {
     if (n) n.textContent = text;
   }}
 
-  // Hand the result to Rust with a real navigation. A location.hash change is
-  // a same-document navigation and never reaches Tauri on WebView2, which is
-  // why the earlier version of this flow silently captured nothing.
+  // Hand the result to Rust. This has to be a real navigation: a location.hash
+  // change is a same-document navigation which Tauri never reports on WebView2,
+  // which is why an earlier version of this flow captured nothing at all.
   function finish(kind, value) {{
     if (settled) return;
     settled = true;
@@ -222,8 +131,6 @@ fn build_inject_script(client_id: &str) -> String {
       encodeURIComponent(value == null ? '' : String(value));
   }}
 
-  // The host page is only an origin. Hide everything it renders and show our
-  // own inert screen instead, so there is never a Grindr login button to click.
   function mountOverlay() {{
     var style = document.createElement('style');
     style.textContent =
@@ -282,11 +189,9 @@ fn build_inject_script(client_id: &str) -> String {
         error_callback: function(err) {{
           var reason = (err && err.message) ? err.message : 'popup_closed';
           if (!userInitiated) {{
-            // This attempt came from our own timer, with no user gesture, so
-            // Chromium most likely refused to open the popup. That is not a
-            // real failure — re-arm the button so one click can retry. The
-            // attempt is still logged, and a failure after a real click is
-            // reported to Rust as normal.
+            // This attempt came from our own timer with no user gesture, so the
+            // popup was most likely refused. Not a real failure — re-arm the
+            // button so one click can retry.
             log('auto-start blocked (' + reason + '), waiting for a click');
             note('Press the button to continue.');
             starting = false;
@@ -334,21 +239,70 @@ fn build_inject_script(client_id: &str) -> String {
     )
 }
 
-/// Opens a secondary webview window to `https://web.grindr.com`, injects the
-/// Google OAuth token client, and emits the resulting `ya29…` token back to the
-/// main window via the `fg:google-oauth-token` event.
+/// Closes the OAuth window and any Google popup still open.
+fn close_oauth_windows<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Let the result navigation settle before tearing the windows down.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        for (label, win) in app.webview_windows() {
+            if label == OAUTH_WINDOW_LABEL || label.starts_with(POPUP_LABEL_PREFIX) {
+                let _ = win.close();
+            }
+        }
+    });
+}
+
+/// Reports a failure to the frontend: the specific reason first, then an empty
+/// token so the loading state is always cleared.
+fn report_failure<R: Runtime>(app: &AppHandle<R>, reason: &str) {
+    OAUTH_FINISHED.store(true, Ordering::SeqCst);
+    #[cfg(debug_assertions)]
+    eprintln!("[GOOGLE-AUTH] {reason}");
+    oauth_log(app, &format!("flow failed: {reason}"));
+    let _ = app.emit(GOOGLE_OAUTH_ERROR_EVENT, reason.to_owned());
+    let _ = app.emit(GOOGLE_OAUTH_TOKEN_EVENT, "");
+    close_oauth_windows(app);
+}
+
+/// Opens the OAuth helper webview and captures a `ya29…` Google access token
+/// using Grindr's own client ID.
 ///
-/// The page is only ever a host for the injected script — it needs to be a real
-/// HTML document on an origin that Grindr registered as an authorised
-/// JavaScript origin for their Google OAuth client ID, because that is what
-/// makes Google accept the implicit token request. It does *not* need to be a
-/// usable (or subscription-gated) Grindr session, and its own UI is hidden.
+/// # How the token is obtained
 ///
-/// This previously pointed at `https://grindr.mobi`, chosen for being ungated.
-/// That origin now answers 404, so nothing ever defined
-/// `google.accounts.oauth2` and the flow sat on a dead page until it timed out.
-/// It then moved to `web.grindr.com` while still relying on the page's own
-/// scripts, which left the user staring at Grindr's real login form.
+/// Google's Identity Services token client (`initTokenClient`) can only ever
+/// complete through a popup, and it accepts any page served from an origin that
+/// is an authorised JavaScript origin for the client ID. So:
+///
+/// 1. A webview opens on [`OAUTH_ORIGIN`], purely to provide that origin. Its own
+///    UI is hidden and replaced with an inert screen.
+/// 2. An injected script loads Google's Identity Services client and calls
+///    `requestAccessToken`.
+/// 3. Google opens its account chooser. Tauri denies `window.open` by default,
+///    which is why this failed on every earlier attempt — so `on_new_window`
+///    creates a real child window for it via `NewWindowResponse::Create`. wry
+///    hands that to WebView2's `SetNewWindow`, which is what preserves the
+///    `window.opener` relationship Google's callback depends on.
+/// 4. On success the token comes back to the injected script, which navigates to
+///    `fg-oauth://done?v=<token>`. `on_navigation` intercepts that.
+///
+/// # Why the result travels by URL and not by fragment
+///
+/// A `location.hash` change is a same-document navigation and Tauri never
+/// reports it on WebView2: one earlier window sat open for 32 minutes with no
+/// sentinel ever logged. A real navigation to an unhandled scheme *is* reported —
+/// `on_navigation` receives the complete URL — it merely also makes WebView2 try
+/// to launch the scheme and fail, so the navigation is blocked by returning
+/// `false` once the token is in hand.
+///
+/// # Redirects are not an option
+///
+/// Google was probed directly: this client accepts no redirect URI we can use.
+/// `http://127.0.0.1:<port>`, `localhost`, `urn:ietf:wg:oauth:2.0:oob`,
+/// `https://web.grindr.com/` and `https://grindr.mobi/` are all rejected with
+/// `redirect_uri_mismatch`, and the installed-application custom scheme is
+/// refused with `invalid_request` ("Custom scheme URIs are not allowed for the
+/// OAuth 2.0 Authorization endpoint"). Only the JavaScript-origin flow remains.
 #[tauri::command]
 pub async fn open_google_auth_webview(app: AppHandle) -> Result<(), AppError> {
     // If a previous OAuth window is still open, close it before opening a new
@@ -357,7 +311,7 @@ pub async fn open_google_auth_webview(app: AppHandle) -> Result<(), AppError> {
         SUPPRESS_CLOSE_EMISSIONS.store(true, Ordering::SeqCst);
         let _ = existing.close();
         // Give the OS a moment to process the close before creating a new window.
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
         SUPPRESS_CLOSE_EMISSIONS.store(false, Ordering::SeqCst);
     }
 
@@ -366,15 +320,16 @@ pub async fn open_google_auth_webview(app: AppHandle) -> Result<(), AppError> {
 
     let script = build_inject_script(GRINDR_GOOGLE_CLIENT_ID);
 
-    // Clone before the builder borrows `app`, so the on_navigation closure can
-    // move its own independent handle without conflicting with the borrow.
+    // Clone before the builder borrows `app`, so the closures can each move
+    // their own independent handle without conflicting with the borrow.
+    let app_for_popup = app.clone();
     let app_for_nav = app.clone();
 
     let window = tauri::WebviewWindowBuilder::new(
         &app,
         OAUTH_WINDOW_LABEL,
         tauri::WebviewUrl::External(
-            "https://web.grindr.com"
+            OAUTH_ORIGIN
                 .parse()
                 .map_err(|e| AppError::Http(format!("Invalid OAuth URL: {e}")))?,
         ),
@@ -383,23 +338,85 @@ pub async fn open_google_auth_webview(app: AppHandle) -> Result<(), AppError> {
     .inner_size(480.0, 640.0)
     .resizable(true)
     .initialization_script(&script)
+    .on_new_window(move |url, features| {
+        // Google's account chooser is opened with window.open. Tauri denies that
+        // by default, which is what made every earlier attempt fail with
+        // "Failed to open popup window". Handing WebView2 the new webview via
+        // NewWindowResponse::Create goes through SetNewWindow, which keeps the
+        // window.opener relationship Google's postMessage callback needs.
+        let label = format!(
+            "{POPUP_LABEL_PREFIX}-{}",
+            POPUP_COUNTER.fetch_add(1, Ordering::SeqCst)
+        );
+        let created = tauri::WebviewWindowBuilder::new(
+            &app_for_popup,
+            &label,
+            tauri::WebviewUrl::External(url),
+        )
+        .title("Choose an account")
+        .inner_size(460.0, 640.0)
+        .window_features(features)
+        .build();
+
+        match created {
+            Ok(window) => tauri::webview::NewWindowResponse::Create { window },
+            Err(e) => {
+                oauth_log(
+                    &app_for_popup,
+                    &format!("could not open the Google account chooser: {e}"),
+                );
+                tauri::webview::NewWindowResponse::Deny
+            }
+        }
+    })
     .on_navigation(move |url| {
-        // Results arrive via the fg-oauth:// scheme, not here — a fragment change
-        // is a same-document navigation and is not reported on WebView2. This
-        // handler only traces, so we can tell "the page never loaded" apart from
-        // "the flow ran but the hand-off did not arrive".
-        let traced: String = url.to_string().chars().take(160).collect();
-        oauth_log(&app_for_nav, &format!("nav url={traced}"));
-        true
+        // Anything that is not our result scheme is the host origin or Google's
+        // own pages: the consent UI, the account chooser, the sign-in form.
+        if url.scheme() != OAUTH_SCHEME {
+            return true;
+        }
+
+        let app = &app_for_nav;
+        let value = url
+            .query_pairs()
+            .find(|(k, _)| k == "v")
+            .map(|(_, v)| v.into_owned())
+            .unwrap_or_default();
+        // The host is the outcome: "done" or "error".
+        let outcome = url.host_str().unwrap_or("").to_owned();
+
+        oauth_log(app, &format!("result scheme outcome={outcome:?} len={}", value.len()));
+
+        match outcome.as_str() {
+            "done" if !value.is_empty() => {
+                OAUTH_FINISHED.store(true, Ordering::SeqCst);
+                #[cfg(debug_assertions)]
+                eprintln!("[GOOGLE-AUTH] Captured token (len={})", value.len());
+                oauth_log(app, &format!("captured token (len={})", value.len()));
+                let _ = app.emit(GOOGLE_OAUTH_TOKEN_EVENT, value);
+            }
+            "error" => {
+                report_failure(app, if value.is_empty() { "unknown" } else { &value });
+            }
+            other => {
+                report_failure(app, &format!("unexpected OAuth result ({other})"));
+            }
+        }
+
+        close_oauth_windows(app);
+
+        // Block it. Nothing on this machine handles fg-oauth://, so letting the
+        // navigation proceed would only raise "the scheme does not have a
+        // registered handler" in place of a working sign-in.
+        false
     })
     .build()
     .map_err(|e| AppError::Http(format!("Failed to open OAuth webview: {e}")))?;
 
     oauth_log(&app, "opened OAuth webview");
 
-    // If the user closes the window before the flow completes, emit an empty
-    // token so the frontend can reset its loading state and show an error
-    // instead of spinning forever.
+    // If the user closes the window before the flow completes, tell the frontend
+    // so it can reset its loading state and explain what happened.
     let app_for_close = app.clone();
     window.on_window_event(move |event| {
         if matches!(
@@ -410,6 +427,7 @@ pub async fn open_google_auth_webview(app: AppHandle) -> Result<(), AppError> {
             && !OAUTH_FINISHED.swap(true, Ordering::SeqCst)
         {
             oauth_log(&app_for_close, "window closed before the flow finished");
+            let _ = app_for_close.emit(GOOGLE_OAUTH_ERROR_EVENT, "cancelled");
             let _ = app_for_close.emit(GOOGLE_OAUTH_TOKEN_EVENT, "");
         }
     });

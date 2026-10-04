@@ -79,10 +79,6 @@ pub fn run() {
         }
 
         let app = builder
-            // Carries the Google OAuth result out of the helper webview. A
-            // location.hash sentinel cannot be used: same-document navigations
-            // are never reported to `on_navigation` on WebView2.
-            .register_uri_scheme_protocol("fg-oauth", api::google_auth::handle_oauth_scheme)
             .plugin(tauri_plugin_notification::init())
             .plugin(tauri_plugin_os::init())
             .plugin(tauri_plugin_geolocation::init())
@@ -230,7 +226,6 @@ pub fn run() {
 
         let builder = tauri::Builder::default()
             .plugin(hotswap)
-            .register_uri_scheme_protocol("fg-oauth", api::google_auth::handle_oauth_scheme)
             .plugin(tauri_plugin_notification::init())
             .plugin(tauri_plugin_os::init())
             .plugin(tauri_plugin_geolocation::init())
