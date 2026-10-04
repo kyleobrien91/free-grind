@@ -48,9 +48,9 @@ fn oauth_log(app: &AppHandle, message: &str) {
     }
 }
 
-/// JS injected into web.grindr.com after the page loads.
-/// - Waits for `google.accounts.oauth2` to become available (it is loaded by
-///   the page's own scripts unconditionally — no membership check on load).
+/// JS injected into the OAuth helper webview before the page's own scripts run.
+/// - Injects Google's Identity Services client itself rather than assuming the
+///   page loads it, then waits for `google.accounts.oauth2` to appear.
 /// - Calls `initTokenClient` with Grindr's own client ID so Google accepts the
 ///   origin and returns a valid ya29 token.
 /// - On success, stores the token in `window.__FG_OAUTH_TOKEN__` and navigates
@@ -68,14 +68,36 @@ fn build_inject_script(client_id: &str) -> String {
   if (window.__FG_OAUTH_INJECTED__) return;
   window.__FG_OAUTH_INJECTED__ = true;
 
+  function hasGsi() {{
+    return !!(window.google && window.google.accounts && window.google.accounts.oauth2);
+  }}
+
+  function fail(code) {{
+    window.location.hash = 'fg-oauth-error=' + code;
+  }}
+
+  // Load Google's Identity Services client ourselves instead of depending on
+  // whatever scripts the loaded page happens to run. The page only has to be a
+  // real HTML document served from an origin authorised for our client ID.
+  // Relying on the page's own scripts is what broke: grindr.mobi started
+  // returning 404, so nothing ever exposed google.accounts.oauth2 and the old
+  // wait loop spun for 30 s before failing silently.
+  function injectGsi() {{
+    if (hasGsi()) return;
+    var s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true;
+    s.defer = true;
+    s.onerror = function() {{ fail('gsi_script_failed'); }};
+    (document.head || document.documentElement).appendChild(s);
+  }}
+
   function waitForGsi(attempts) {{
     if (attempts <= 0) {{
-      window.location.hash = 'fg-oauth-error=gsi_not_found';
+      fail('gsi_not_found');
       return;
     }}
-    if (typeof window.google !== 'undefined' &&
-        window.google.accounts &&
-        window.google.accounts.oauth2) {{
+    if (hasGsi()) {{
       startFlow();
     }} else {{
       setTimeout(function() {{ waitForGsi(attempts - 1); }}, 300);
@@ -107,7 +129,8 @@ fn build_inject_script(client_id: &str) -> String {
     }}
   }}
 
-  // Give the page's own scripts up to 30 s to load the GSI library.
+  injectGsi();
+  // Wait up to 30 s for the injected client library to finish initialising.
   waitForGsi(100);
 }})();
 "#,
@@ -115,15 +138,19 @@ fn build_inject_script(client_id: &str) -> String {
     )
 }
 
-/// Opens a secondary webview window to `https://grindr.mobi`, injects the
-/// Google OAuth token client after the page loads, and emits the resulting
-/// `ya29…` token back to the main window via the `fg:google-oauth-token` event.
+/// Opens a secondary webview window to `https://web.grindr.com`, injects the
+/// Google OAuth token client, and emits the resulting `ya29…` token back to the
+/// main window via the `fg:google-oauth-token` event.
 ///
-/// We use `grindr.mobi` (the mobile web origin) because it is accessible to
-/// **all users** with no membership gate — unlike `web.grindr.com` which may
-/// require a paid subscription. Grindr has registered `grindr.mobi` as an
-/// authorised JavaScript origin for their Google OAuth client ID, so Google
-/// accepts the implicit token request from that origin.
+/// The page is only ever a host for the injected script — it needs to be a real
+/// HTML document on an origin that Grindr registered as an authorised
+/// JavaScript origin for their Google OAuth client ID, because that is what
+/// makes Google accept the implicit token request. It does *not* need to be a
+/// usable (or subscription-gated) Grindr session.
+///
+/// This previously pointed at `https://grindr.mobi`, chosen for being ungated.
+/// That origin now answers 404, which meant no page scripts ran, GSI never
+/// loaded and the flow sat on a dead page until it timed out.
 #[tauri::command]
 pub async fn open_google_auth_webview(app: AppHandle) -> Result<(), AppError> {
     // If a previous OAuth window is still open, close it before opening a new
@@ -153,7 +180,7 @@ pub async fn open_google_auth_webview(app: AppHandle) -> Result<(), AppError> {
         &app,
         OAUTH_WINDOW_LABEL,
         tauri::WebviewUrl::External(
-            "https://grindr.mobi"
+            "https://web.grindr.com"
                 .parse()
                 .map_err(|e| AppError::Http(format!("Invalid OAuth URL: {e}")))?,
         ),
