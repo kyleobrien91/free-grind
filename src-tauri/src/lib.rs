@@ -52,8 +52,17 @@ pub fn run() {
         #[cfg(not(target_os = "windows"))]
         let is_manager_runtime = false;
 
+        // Instances launched through the ExeManager harness exist to exercise the
+        // binary sitting next to them, so they must render the assets embedded in
+        // it. The hotswap plugin serves a downloaded OTA bundle in preference to
+        // the embedded assets, and that bundle is the released production
+        // frontend — without this gate every local frontend change is silently
+        // hidden. Real installs never set FREE_GRIND_MODE, so OTA updates keep
+        // working for them.
+        let is_harness_run = std::env::var_os("FREE_GRIND_MODE").is_some();
+
         let context = tauri::generate_context!();
-        let (hotswap, context) = if is_manager_runtime {
+        let (hotswap, context) = if is_manager_runtime || is_harness_run {
             (None, context)
         } else {
             match tauri_plugin_hotswap::init(context) {

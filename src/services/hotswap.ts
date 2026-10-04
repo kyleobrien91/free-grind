@@ -128,9 +128,16 @@ export async function markHotswapStartupReady(): Promise<void> {
 		return;
 	}
 
-	await configure({ channel: currentChannel });
-	await notifyReady();
-	startupReadyNotified = true;
+	try {
+		await configure({ channel: currentChannel });
+		await notifyReady();
+		startupReadyNotified = true;
+	} catch (error) {
+		// The plugin is deliberately not registered for ExeManager harness runs
+		// (see src-tauri/src/lib.rs), so these commands are absent there. The app
+		// works fine without OTA updates, so this is expected rather than fatal.
+		appLog.debug("[hotswap] unavailable in this build:", error);
+	}
 }
 
 /**
