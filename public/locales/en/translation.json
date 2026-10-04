@@ -1000,6 +1000,7 @@
       "google_sign_in_button": "Sign in with Google",
       "google_sign_in_opening": "Opening Google sign-in…",
       "google_sign_in_error": "Google sign-in was cancelled or failed. Please try again.",
+      "google_sign_in_error_detail": "Google sign-in failed: {{reason}}",
       "google_sign_in_or": "or paste a token manually"
     },
     "bug_report": {

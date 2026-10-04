@@ -113,6 +113,10 @@ export function SignInPage() {
 	// Used to (a) ignore stray emissions and (b) guarantee the loading
 	// spinner is reset exactly once, even if the webview is closed early.
 	const googleFlowActive = useRef(false);
+	// Set when a specific failure reason arrived from the Rust side, so the
+	// generic "cancelled or failed" message does not overwrite it. Rust emits
+	// `fg:google-oauth-error` immediately before `fg:google-oauth-token`.
+	const googleErrorDetail = useRef<string | null>(null);
 
 	const { login, loginWithJwt, error } = useAuth();
 	const navigate = useNavigate();
@@ -153,6 +157,21 @@ export function SignInPage() {
 	// Registered once on mount so the listener is always attached before
 	// handleGoogleSignIn invokes the Rust command.
 	useEffect(() => {
+		// Google's own failure reason (popup_closed, access_denied, …), which
+		// arrives just before the empty-token event below.
+		const unlistenError = listen<string>("fg:google-oauth-error", (event) => {
+			if (!googleFlowActive.current) return;
+			const reason = event.payload?.trim();
+			if (!reason) return;
+			googleErrorDetail.current = reason;
+			setGoogleError(
+				t("auth.sign_in.google_sign_in_error_detail", {
+					reason,
+					defaultValue: "Google sign-in failed: {{reason}}",
+				}),
+			);
+		});
+
 		const unlisten = listen<string>("fg:google-oauth-token", async (event) => {
 			if (!googleFlowActive.current) return;
 			googleFlowActive.current = false;
@@ -160,11 +179,14 @@ export function SignInPage() {
 
 			const token = event.payload ?? "";
 			if (!token) {
-				setGoogleError(
-					t("auth.sign_in.google_sign_in_error", {
-						defaultValue: "Google sign-in was cancelled or failed. Please try again.",
-					}),
-				);
+				// Don't stomp a specific reason that arrived a moment ago.
+				if (!googleErrorDetail.current) {
+					setGoogleError(
+						t("auth.sign_in.google_sign_in_error", {
+							defaultValue: "Google sign-in was cancelled or failed. Please try again.",
+						}),
+					);
+				}
 				return;
 			}
 			setGoogleError(null);
@@ -178,11 +200,13 @@ export function SignInPage() {
 
 		return () => {
 			void unlisten.then((fn) => fn());
+			void unlistenError.then((fn) => fn());
 		};
 	}, [loginWithJwt, navigate, t]);
 
 	const handleGoogleSignIn = async () => {
 		setGoogleError(null);
+		googleErrorDetail.current = null;
 		googleFlowActive.current = true;
 		setIsGoogleLoading(true);
 		try {

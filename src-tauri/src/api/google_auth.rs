@@ -18,6 +18,36 @@ static SUPPRESS_CLOSE_EMISSIONS: AtomicBool = AtomicBool::new(false);
 /// Event name emitted back to the main window once the token is captured.
 pub const GOOGLE_OAUTH_TOKEN_EVENT: &str = "fg:google-oauth-token";
 
+/// Event name emitted when the flow failed, carrying Google's own error text
+/// (for example `popup_closed` or `access_denied`) so the UI can explain what
+/// actually happened instead of showing a generic message.
+pub const GOOGLE_OAUTH_ERROR_EVENT: &str = "fg:google-oauth-error";
+
+/// Appends a timestamped line to `<app_log_dir>/google-oauth.log`.
+///
+/// Release builds on Windows run without a console (`windows_subsystem = "windows"`
+/// in `main.rs`), so `eprintln!` output is discarded and the rest of this crate's
+/// `#[cfg(debug_assertions)]` tracing cannot be used to diagnose the OAuth flow.
+/// This leaves a durable trace we can read back after a failed sign-in attempt.
+fn oauth_log(app: &AppHandle, message: &str) {
+    let Ok(dir) = app.path().app_log_dir() else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join("google-oauth.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let stamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
+        let _ = writeln!(file, "[{stamp}] {message}");
+    }
+}
+
 /// JS injected into web.grindr.com after the page loads.
 /// - Waits for `google.accounts.oauth2` to become available (it is loaded by
 ///   the page's own scripts unconditionally — no membership check on load).
@@ -136,11 +166,19 @@ pub async fn open_google_auth_webview(app: AppHandle) -> Result<(), AppError> {
         let app = &app_for_nav;
         let fragment = url.fragment().unwrap_or("").to_owned();
 
+        // Trace every navigation so we can tell "the injected script never set
+        // the sentinel" apart from "the sentinel was set but never reached us".
+        // Truncated because Google's popup URLs carry long query strings.
+        let traced = format!("{url}");
+        let traced = traced.chars().take(160).collect::<String>();
+        oauth_log(app, &format!("nav fragment={fragment:?} url={traced}"));
+
         if let Some(rest) = fragment.strip_prefix("fg-oauth-done=") {
             let token = rest.to_owned();
             finished_for_nav.store(true, Ordering::SeqCst);
             #[cfg(debug_assertions)]
             eprintln!("[GOOGLE-AUTH] Captured token (len={})", token.len());
+            oauth_log(&app, &format!("captured token (len={})", token.len()));
 
             // Emit the token to the main window.
             let _ = app.emit(GOOGLE_OAUTH_TOKEN_EVENT, token);
@@ -164,8 +202,11 @@ pub async fn open_google_auth_webview(app: AppHandle) -> Result<(), AppError> {
             #[cfg(debug_assertions)]
             eprintln!("[GOOGLE-AUTH] OAuth error: {err}");
 
-            // Emit an empty string so the frontend can show a user-friendly
-            // message instead of hanging forever.
+            // The fragment carries Google's own reason; hand it to the frontend
+            // so it can show something specific. The token event is still
+            // emitted (empty) so the loading state is always cleared.
+            oauth_log(&app, &format!("flow error: {err}"));
+            let _ = app.emit(GOOGLE_OAUTH_ERROR_EVENT, err.to_owned());
             let _ = app.emit(GOOGLE_OAUTH_TOKEN_EVENT, "");
 
             let app_clone = app.clone();
@@ -185,6 +226,8 @@ pub async fn open_google_auth_webview(app: AppHandle) -> Result<(), AppError> {
     .build()
     .map_err(|e| AppError::Http(format!("Failed to open OAuth webview: {e}")))?;
 
+    oauth_log(&app, "opened OAuth webview");
+
     // If the user closes the window before the flow completes, emit an empty
     // token so the frontend can reset its loading state and show an error
     // instead of spinning forever.
@@ -197,6 +240,7 @@ pub async fn open_google_auth_webview(app: AppHandle) -> Result<(), AppError> {
             && !SUPPRESS_CLOSE_EMISSIONS.load(Ordering::SeqCst)
             && !finished_for_close.swap(true, Ordering::SeqCst)
         {
+            oauth_log(&app_for_close, "window closed before the flow finished");
             let _ = app_for_close.emit(GOOGLE_OAUTH_TOKEN_EVENT, "");
         }
     });
