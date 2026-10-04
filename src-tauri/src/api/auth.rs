@@ -63,6 +63,15 @@ pub struct RefreshRequest {
     pub geohash: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThirdPartyLoginRequest {
+    pub third_party_vendor: u8, // 2 for Google
+    pub third_party_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geohash: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginResult {
@@ -833,7 +842,155 @@ impl GrindrClient {
         Ok(LoginResult { profile_id })
     }
 
+    pub async fn login_with_third_party(
+        &self,
+        vendor: u8,
+        token: &str,
+    ) -> Result<LoginResult, AppError> {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[HTTP-AUTH] login_with_third_party attempt; vendor={}, token_len={}",
+            vendor,
+            token.len()
+        );
+
+        let new_device_id = format!("{:016x}", rand::random::<u64>());
+        let new_advertising_id = uuid::Uuid::new_v4().to_string();
+
+        {
+            let mut device = self.device.write().await;
+            device.device_id = new_device_id.clone();
+            device.advertising_id = new_advertising_id.clone();
+        }
+
+        let body = ThirdPartyLoginRequest {
+            third_party_vendor: vendor,
+            third_party_token: token.trim().to_owned(),
+            geohash: None,
+        };
+
+        let val: serde_json::Value = self
+            .request_json(Method::POST, "/v8/sessions/thirdparty", Some(&body))
+            .await
+            .map_err(|e| {
+                #[cfg(debug_assertions)]
+                eprintln!("[HTTP-AUTH] /v8/sessions/thirdparty request failed: {e}");
+                e
+            })?;
+
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[HTTP-AUTH] /v8/sessions/thirdparty response keys: {:?}",
+            val.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>())
+        );
+
+        fn find_jwt_token(v: &serde_json::Value) -> Option<String> {
+            if let Some(s) = v.as_str() {
+                if s.starts_with("eyJ") {
+                    return Some(s.to_owned());
+                }
+            }
+            if let Some(obj) = v.as_object() {
+                for (k, val) in obj {
+                    if k.contains("session") || k.contains("jwt") || k.contains("token") {
+                        if let Some(jwt) = find_jwt_token(val) {
+                            return Some(jwt);
+                        }
+                    }
+                }
+                for (_, val) in obj {
+                    if let Some(jwt) = find_jwt_token(val) {
+                        return Some(jwt);
+                    }
+                }
+            }
+            None
+        }
+
+        let session_id = val
+            .get("sessionId")
+            .or_else(|| val.get("session_id"))
+            .or_else(|| val.get("jwt"))
+            .or_else(|| val.get("token"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned())
+            .or_else(|| find_jwt_token(&val))
+            .ok_or_else(|| {
+                AppError::Auth(format!(
+                    "No sessionId found in response (keys: {:?})",
+                    val.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>())
+                ))
+            })?;
+
+        let claims = decode_session_jwt(&session_id).map_err(|e| {
+            #[cfg(debug_assertions)]
+            eprintln!("[HTTP-AUTH] JWT decode for session_id failed: {e}");
+            e
+        })?;
+
+        let profile_id = val
+            .get("profileId")
+            .or_else(|| val.get("profile_id"))
+            .and_then(|v| {
+                v.as_str()
+                    .map(|s| s.to_owned())
+                    .or_else(|| v.as_i64().map(|n| n.to_string()))
+            })
+            .unwrap_or_else(|| claims.profile_id.clone());
+
+        let auth_token = val
+            .get("authToken")
+            .or_else(|| val.get("auth_token"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[HTTP-AUTH] /v8/sessions/thirdparty success; profile_id={profile_id}"
+        );
+
+        let session = Session {
+            email: String::new(),
+            profile_id: profile_id.clone(),
+            session_id,
+            auth_token,
+            expires_at: claims.exp,
+            device_id: new_device_id,
+            advertising_id: new_advertising_id,
+        };
+
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[HTTP-AUTH] Saving session to storage; profile_id={}, expires_at={}",
+            session.profile_id, session.expires_at
+        );
+        if let Err(_error) = AuthStorage::set_session(&session) {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[HTTP-AUTH] Failed to persist session (continuing in-memory only): {}",
+                _error
+            );
+        }
+        if let Err(_error) = AuthStorage::save_account(&session) {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[HTTP-AUTH] Failed to register account in switcher (login still succeeded): {}",
+                _error
+            );
+        }
+
+        let profile_id = session.profile_id.clone();
+        *self.session.write().await = Some(session);
+
+        Ok(LoginResult { profile_id })
+    }
+
     pub async fn login_with_jwt(&self, token: &str) -> Result<LoginResult, AppError> {
+        if token.trim().starts_with("ya29.") {
+            return self.login_with_third_party(2, token).await;
+        }
+
         #[cfg(debug_assertions)]
         eprintln!(
             "[HTTP-AUTH] login_with_jwt attempt; token_len={}",
@@ -1172,3 +1329,41 @@ pub async fn sync_push_token(
     eprintln!("[HTTP-PUSH] Tauri command sync_push_token invoked");
     state.client()?.sync_push_token(&token).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_third_party_login_request_serialization() {
+        let req = ThirdPartyLoginRequest {
+            third_party_vendor: 2,
+            third_party_token: "ya29.test_token".to_string(),
+            geohash: None,
+        };
+        let json = serde_json::to_string(&req).expect("Failed to serialize");
+        assert_eq!(
+            json,
+            r#"{"thirdPartyVendor":2,"thirdPartyToken":"ya29.test_token"}"#
+        );
+
+        let req_with_geo = ThirdPartyLoginRequest {
+            third_party_vendor: 2,
+            third_party_token: "ya29.test_token".to_string(),
+            geohash: Some("9q8yy".to_string()),
+        };
+        let json_with_geo = serde_json::to_string(&req_with_geo).expect("Failed to serialize");
+        assert_eq!(
+            json_with_geo,
+            r#"{"thirdPartyVendor":2,"thirdPartyToken":"ya29.test_token","geohash":"9q8yy"}"#
+        );
+    }
+
+    #[test]
+    fn test_google_oauth_token_detection() {
+        assert!("ya29.a0AWY7C...".trim().starts_with("ya29."));
+        assert!("  ya29.a0AWY7C...  ".trim().starts_with("ya29."));
+        assert!(!"eyJhbGciOi...".trim().starts_with("ya29."));
+    }
+}
+

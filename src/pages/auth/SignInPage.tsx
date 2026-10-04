@@ -1,4 +1,4 @@
-import { useState, type InputHTMLAttributes, type ReactNode } from "react";
+import { useState, useEffect, useRef, type InputHTMLAttributes, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../contexts/useAuth";
 import { AuthShell } from "../../components/ui/auth-shell";
@@ -8,6 +8,8 @@ import type { SignInMethod } from "../../types/auth";
 import { useTranslation } from "react-i18next";
 import { Mail, Lock, KeyRound, AlertCircle, ExternalLink, Eye, EyeOff } from "lucide-react";
 import { cn } from "../../utils/cn";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 function AuthMethodTab({
 	active,
@@ -105,6 +107,12 @@ export function SignInPage() {
 
 	const [jwtToken, setJwtToken] = useState("");
 	const [isTokenLoading, setIsTokenLoading] = useState(false);
+	const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+	const [googleError, setGoogleError] = useState<string | null>(null);
+	// Tracks whether a Google OAuth flow we initiated is still in flight.
+	// Used to (a) ignore stray emissions and (b) guarantee the loading
+	// spinner is reset exactly once, even if the webview is closed early.
+	const googleFlowActive = useRef(false);
 
 	const { login, loginWithJwt, error } = useAuth();
 	const navigate = useNavigate();
@@ -135,6 +143,56 @@ export function SignInPage() {
 			// AuthContext updates `error`, which is rendered in the form.
 		} finally {
 			setIsTokenLoading(false);
+		}
+	};
+
+	// Listen for the ya29 token emitted by the Rust google_auth webview.
+	// The event payload is:
+	//   - a non-empty token string → valid Google access token → auto-login
+	//   - an empty string          → cancelled / failed / window closed early
+	// Registered once on mount so the listener is always attached before
+	// handleGoogleSignIn invokes the Rust command.
+	useEffect(() => {
+		const unlisten = listen<string>("fg:google-oauth-token", async (event) => {
+			if (!googleFlowActive.current) return;
+			googleFlowActive.current = false;
+			setIsGoogleLoading(false);
+
+			const token = event.payload ?? "";
+			if (!token) {
+				setGoogleError(
+					t("auth.sign_in.google_sign_in_error", {
+						defaultValue: "Google sign-in was cancelled or failed. Please try again.",
+					}),
+				);
+				return;
+			}
+			setGoogleError(null);
+			try {
+				await loginWithJwt(token);
+				navigate("/");
+			} catch {
+				// AuthContext already set the error state.
+			}
+		});
+
+		return () => {
+			void unlisten.then((fn) => fn());
+		};
+	}, [loginWithJwt, navigate, t]);
+
+	const handleGoogleSignIn = async () => {
+		setGoogleError(null);
+		googleFlowActive.current = true;
+		setIsGoogleLoading(true);
+		try {
+			await invoke("open_google_auth_webview");
+			// The fg:google-oauth-token event (handled above) ends the flow.
+			// If the user closes the webview early, Rust emits an empty token.
+		} catch {
+			// Webview failed to open entirely.
+			googleFlowActive.current = false;
+			setIsGoogleLoading(false);
 		}
 	};
 
@@ -233,6 +291,40 @@ export function SignInPage() {
 				</form>
 			) : (
 				<form key="token" onSubmit={handleTokenSubmit} className="animate-fade-in space-y-3">
+					{/* ── Sign in with Google ── */}
+					<Button
+						type="button"
+						variant="secondary"
+						className="flex w-full items-center justify-center gap-2"
+						loading={isGoogleLoading}
+						disabled={isGoogleLoading || isTokenLoading}
+						onClick={handleGoogleSignIn}
+					>
+						{!isGoogleLoading && (
+							/* Google "G" icon */
+							<svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true">
+								<path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+								<path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+								<path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+								<path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.35-8.16 2.35-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+								<path fill="none" d="M0 0h48v48H0z"/>
+							</svg>
+						)}
+						{isGoogleLoading
+							? t("auth.sign_in.google_sign_in_opening", { defaultValue: "Opening Google sign-in…" })
+							: t("auth.sign_in.google_sign_in_button", { defaultValue: "Sign in with Google" })}
+					</Button>
+
+					{/* ── Divider ── */}
+					<div className="flex items-center gap-3">
+						<div className="h-px flex-1 bg-[var(--border)]" />
+						<span className="text-xs text-[var(--text-muted)]">
+							{t("auth.sign_in.google_sign_in_or", { defaultValue: "or paste a token manually" })}
+						</span>
+						<div className="h-px flex-1 bg-[var(--border)]" />
+					</div>
+
+					{/* ── Manual token input ── */}
 					<div>
 						<a
 							href="https://freegrinddocs.imaoreo.dev/guide/login"
@@ -248,16 +340,23 @@ export function SignInPage() {
 							type="text"
 							value={jwtToken}
 							onChange={(e) => setJwtToken(e.target.value)}
-							required
 							autoFocus
-							placeholder="eyJhbGciOi..."
+							placeholder={t("auth.sign_in.token_placeholder", {
+								defaultValue: "ya29... or eyJhbGciOi...",
+							})}
 							autoComplete="off"
 						/>
+						<p className="mt-1.5 text-xs text-[var(--text-muted)]">
+							{t("auth.sign_in.token_helper", {
+								defaultValue:
+									"Accepts Google OAuth tokens (ya29...) and Grindr Web session JWTs (eyJ...).",
+							})}
+						</p>
 					</div>
 					<AuthSubmitSection
-						error={error}
+						error={googleError ?? error}
 						loading={isTokenLoading}
-						disabled={!isTokenFormValid}
+						disabled={!isTokenFormValid || isGoogleLoading}
 						loadingLabel={t("auth.sign_in.signing_in")}
 						label={t("auth.sign_in.submit")}
 					/>

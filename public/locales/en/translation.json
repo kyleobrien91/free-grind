@@ -990,11 +990,17 @@
       "method_token": "Token",
       "method_password": "Email & Password",
       "token_help": "How to get your authentication token",
+      "token_helper": "Accepts Google OAuth tokens (ya29...) and Grindr Web session JWTs (eyJ...).",
+      "token_placeholder": "ya29... or eyJhbGciOi...",
       "jwt_label": "JWT Token",
       "signing_in": "Signing in...",
       "submit": "Sign In",
       "add_profile_title": "Add Profile",
-      "add_profile_subtitle": "Sign in with the account you want to add."
+      "add_profile_subtitle": "Sign in with the account you want to add.",
+      "google_sign_in_button": "Sign in with Google",
+      "google_sign_in_opening": "Opening Google sign-in…",
+      "google_sign_in_error": "Google sign-in was cancelled or failed. Please try again.",
+      "google_sign_in_or": "or paste a token manually"
     },
     "bug_report": {
       "button": "Report a bug"
